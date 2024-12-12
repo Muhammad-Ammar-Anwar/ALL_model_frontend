@@ -1,151 +1,118 @@
 import streamlit as st
 import torch
-from transformers import (
-    AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, GPTNeoForCausalLM, GPT2Tokenizer, AutoModelForSeq2SeqLM
-)
-from peft import PeftModel
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, GPTNeoForCausalLM, GPT2Tokenizer
 import pdfplumber
+import os
 
-# Force CPU usage
-DEVICE = "cpu"
+# Define the device for inference (GPU or CPU)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MAX_TARGET_LENGTH = 800  # Adjust for a more detailed summary
 
-# Load Models and Tokenizers
-@st.cache_resource
-def load_model(model_id, tokenizer_id, is_peft=False, quant_config=None):
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
-    if quant_config:
-        model = AutoModelForCausalLM.from_pretrained(model_id)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(model_id).to(DEVICE)
+# Load the fine-tuned model and tokenizer for summarization
+fine_tuned_output_dir = "ShahzaibDev/flant5-finetuned-summarizer"
+fine_tuned_model = AutoModelForSeq2SeqLM.from_pretrained(fine_tuned_output_dir).to(DEVICE)
+tokenizer = AutoTokenizer.from_pretrained(fine_tuned_output_dir)
 
-    if is_peft:
-        model = PeftModel.from_pretrained(model, model_id)
+# Load GPT-Neo model for text generation
+base_model_name = "EleutherAI/gpt-neo-125M"
+gpt_neo_tokenizer = GPT2Tokenizer.from_pretrained(base_model_name)
+gpt_neo_model = GPTNeoForCausalLM.from_pretrained(base_model_name).to(DEVICE)
 
-    model.eval()
-    return model, tokenizer
+# Function to extract text from a PDF file using pdfplumber
+def extract_text_from_pdf(pdf_file_path):
+    if not os.path.exists(pdf_file_path):
+        raise FileNotFoundError(f"The file at {pdf_file_path} does not exist.")
+    
+    with pdfplumber.open(pdf_file_path) as pdf:
+        text = ""
+        for page in pdf.pages:
+            text += page.extract_text()
+    return text
 
-# Load specific models
-@st.cache_resource
-def load_gpt_neo():
-    tokenizer = GPT2Tokenizer.from_pretrained("EleutherAI/gpt-neo-125M")
-    tokenizer.pad_token = tokenizer.eos_token
-    model = GPTNeoForCausalLM.from_pretrained("AmmarA22/gptneo-wikitext-quantized").to(DEVICE)
-    return model, tokenizer
+# Define the prompt for summarization
+def get_prompt(doc):
+    """Format prompts for text summarization using FLAN-T5 models."""
+    prompt = "Summarize the following document:\n\n"
+    prompt += f"{doc}"
+    prompt += "\n\n Summary:"
+    return prompt
 
-@st.cache_resource
-def load_flan_t5():
-    fine_tuned_model = AutoModelForSeq2SeqLM.from_pretrained("ShahzaibDev/flant5-finetuned-summarizer").to(DEVICE)
-    tokenizer = AutoTokenizer.from_pretrained("ShahzaibDev/flant5-finetuned-summarizer")
-    return fine_tuned_model, tokenizer
-
-# Generate responses
-def generate_response(prompt, model, tokenizer, max_length=200):
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True).to(DEVICE)
-    outputs = model.generate(
-        input_ids=inputs.input_ids,
-        attention_mask=inputs.attention_mask,
-        max_new_tokens=max_length,
-        do_sample=True,
-        temperature=0.7,
-        top_k=50
-    )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-# Summarization-specific response generation
-def summarize_text(prompt, model, tokenizer):
+# Generate response (summary) from the model
+def get_response(prompt, model, tokenizer):
+    """Generate a text summary from the prompt."""
+    # Tokenize the prompt
     encoded_input = tokenizer(
         prompt,
         return_tensors="pt",
-        padding="max_length",
+        add_special_tokens=True,
+        padding='max_length',
         truncation=True,
-        max_length=1024
-    ).to(DEVICE)
-    generated_ids = model.generate(
-        **encoded_input,
-        max_length=800,
-        num_beams=6,
-        no_repeat_ngram_size=3
+        max_length=1024  # Adjust for large inputs
     )
-    return tokenizer.decode(generated_ids[0], skip_special_tokens=True)
 
-# Extract text from PDF
-def extract_text_from_pdf(uploaded_file):
-    with pdfplumber.open(uploaded_file) as pdf:
-        return " ".join([page.extract_text() for page in pdf.pages])
+    # Move the inputs to the same device as the model (GPU or CPU)
+    model_inputs = encoded_input.to(DEVICE)
+
+    # Generate the response
+    generated_ids = model.generate(
+        **model_inputs,
+        max_length=MAX_TARGET_LENGTH,
+        num_beams=6,  # Increase the number of beams for better diversity
+        early_stopping=True,
+        no_repeat_ngram_size=3,  # Prevent repetition
+        temperature=0.7,  # Increase randomness
+        top_k=50  # Control the randomness of the output
+    )
+
+    # Decode the response back to text
+    decoded_output = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+    return decoded_output
+
+# Function for inference with GPT-Neo model
+def infer_with_gpt_neo(prompt, model, tokenizer, max_length=200):
+    """Generate a response from the GPT-Neo model given a prompt."""
+    inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
+    
+    outputs = model.generate(
+        inputs["input_ids"],
+        max_length=max_length,
+        num_return_sequences=1,
+        temperature=0.7,  # Controls randomness
+        top_p=0.9,  # Top-p sampling for diverse outputs
+        do_sample=True
+    )
+
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return response
 
 # Streamlit UI
-st.title("Multi-Model Frontend")
-st.markdown("Choose a model, enter your input, and get the response!")
+def main():
+    st.title("Text Processing and GPT-Neo Generation")
+    
+    # Dropdown menu for selecting task (Summarization or Text Generation)
+    task_option = st.selectbox("Choose an option:", ["Summarization", "GPT-Neo Text Generation"])
 
-# Dropdown for model selection
-models = [
-    "Llama-2 QnA",
-    "Medical QA with BioMistral",
-    "GPT-Neo Text Generator",
-    "FLAN-T5 Summarizer"
-]
+    # User input box
+    user_input = st.text_area("Enter the text or prompt:", height=150)
 
-model_choice = st.selectbox("Select a Model", models)
-
-if model_choice == "Llama-2 QnA":
-    model, tokenizer = load_model(
-        "NousResearch/Llama-2-7b-chat-hf",
-        "NousResearch/Llama-2-7b-chat-hf",
-        is_peft=True
-    )
-    prompt = st.text_area("Enter your question:", "", height=150)
-    if st.button("Generate Response"):
-        if prompt.strip():
-            response = generate_response(f"<s>[INST] {prompt.strip()} [/INST]", model, tokenizer)
-            st.write(response)
-        else:
-            st.error("Please enter a valid question.")
-
-elif model_choice == "Medical QA with BioMistral":
-    model, tokenizer = load_model(
-        "ShahzaibDev/Biomistral_Model_weight_files",
-        "ShahzaibDev/Biomistral_Model_weight_files",
-        is_peft=True
-    )
-    question = st.text_area("Enter your question:", "", height=150)
-    question_type = st.text_input("Enter question type (optional):")
-    if st.button("Get Answer"):
-        if question.strip():
-            eval_prompt = f"### Question type: {question_type}\n### Question: {question}\n### Answer:" if question_type else question
-            response = generate_response(eval_prompt, model, tokenizer)
-            st.write(response)
-        else:
-            st.error("Please enter a valid question.")
-
-elif model_choice == "GPT-Neo Text Generator":
-    model, tokenizer = load_gpt_neo()
-    prompt = st.text_area("Enter your prompt:", "", height=150)
-    max_length = st.slider("Maximum Length of Response", 50, 500, 200, 10)
-    if st.button("Generate Response"):
-        if prompt.strip():
-            response = generate_response(prompt, model, tokenizer, max_length)
-            st.write(response)
-        else:
-            st.error("Please enter a valid prompt.")
-
-elif model_choice == "FLAN-T5 Summarizer":
-    model, tokenizer = load_flan_t5()
-    input_type = st.selectbox("Input Type", ["Enter Text", "Upload PDF"])
-    if input_type == "Enter Text":
-        input_text = st.text_area("Enter text to summarize:", "", height=200)
-        if st.button("Summarize"):
-            if input_text.strip():
-                prompt = f"Summarize the following:\n{input_text}\nSummary:"
-                summary = summarize_text(prompt, model, tokenizer)
+    # Button to trigger generation or summarization
+    if st.button("Generate"):
+        if task_option == "Summarization":
+            if user_input:
+                prompt = get_prompt(user_input)
+                summary = get_response(prompt, fine_tuned_model, tokenizer)
+                st.subheader("Generated Summary:")
                 st.write(summary)
             else:
-                st.error("Please enter valid text to summarize.")
-    elif input_type == "Upload PDF":
-        uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
-        if uploaded_file:
-            text = extract_text_from_pdf(uploaded_file)
-            prompt = f"Summarize the following:\n{text}\nSummary:"
-            summary = summarize_text(prompt, model, tokenizer)
-            st.write(summary)
-        else:
-            st.error("Please upload a PDF file.")
+                st.error("Please enter some text to summarize.")
+        
+        elif task_option == "GPT-Neo Text Generation":
+            if user_input:
+                response = infer_with_gpt_neo(user_input, gpt_neo_model, gpt_neo_tokenizer)
+                st.subheader("Generated Response:")
+                st.write(response)
+            else:
+                st.error("Please enter a prompt to generate a response.")
+
+if __name__ == "__main__":
+    main()
