@@ -5,17 +5,16 @@ from transformers import (
 )
 from peft import PeftModel
 import pdfplumber
-import os
 
-# Define device
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Force CPU usage
+DEVICE = "cpu"
 
 # Load Models and Tokenizers
 @st.cache_resource
 def load_model(model_id, tokenizer_id, is_peft=False, quant_config=None):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
     if quant_config:
-        model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", quantization_config=quant_config)
+        model = AutoModelForCausalLM.from_pretrained(model_id)
     else:
         model = AutoModelForCausalLM.from_pretrained(model_id).to(DEVICE)
 
@@ -24,14 +23,6 @@ def load_model(model_id, tokenizer_id, is_peft=False, quant_config=None):
 
     model.eval()
     return model, tokenizer
-
-# Configuration for 4-bit models
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.float16
-)
 
 # Load specific models
 @st.cache_resource
@@ -48,7 +39,6 @@ def load_flan_t5():
     return fine_tuned_model, tokenizer
 
 # Generate responses
-@st.cache_resource
 def generate_response(prompt, model, tokenizer, max_length=200):
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True).to(DEVICE)
     outputs = model.generate(
@@ -79,7 +69,6 @@ def summarize_text(prompt, model, tokenizer):
     return tokenizer.decode(generated_ids[0], skip_special_tokens=True)
 
 # Extract text from PDF
-@st.cache_resource
 def extract_text_from_pdf(uploaded_file):
     with pdfplumber.open(uploaded_file) as pdf:
         return " ".join([page.extract_text() for page in pdf.pages])
@@ -102,8 +91,7 @@ if model_choice == "Llama-2 QnA":
     model, tokenizer = load_model(
         "NousResearch/Llama-2-7b-chat-hf",
         "NousResearch/Llama-2-7b-chat-hf",
-        is_peft=True,
-        quant_config=bnb_config
+        is_peft=True
     )
     prompt = st.text_area("Enter your question:", "", height=150)
     if st.button("Generate Response"):
@@ -117,8 +105,7 @@ elif model_choice == "Medical QA with BioMistral":
     model, tokenizer = load_model(
         "ShahzaibDev/Biomistral_Model_weight_files",
         "ShahzaibDev/Biomistral_Model_weight_files",
-        is_peft=True,
-        quant_config=bnb_config
+        is_peft=True
     )
     question = st.text_area("Enter your question:", "", height=150)
     question_type = st.text_input("Enter question type (optional):")
