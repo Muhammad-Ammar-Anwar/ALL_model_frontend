@@ -6,3 +6,4 @@ fastapi
 uvicorn
 bitsandbytes
 safetensors
+pdfplumber
