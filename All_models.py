@@ -87,7 +87,7 @@ def infer_with_gpt_neo(prompt, model, tokenizer, max_length=200):
 
 # Streamlit UI
 def main():
-    st.title("Text Processing and GPT-Neo Generation")
+    st.title("Multi-Model Application")
     
     # Dropdown menu for selecting task (Summarization or Text Generation)
     task_option = st.selectbox("Choose an option:", ["Summarization", "GPT-Neo Text Generation"])
@@ -95,18 +95,44 @@ def main():
     # User input box
     user_input = st.text_area("Enter the text or prompt:", height=150)
 
-    # Button to trigger generation or summarization
-    if st.button("Generate"):
-        if task_option == "Summarization":
-            if user_input:
-                prompt = get_prompt(user_input)
+    if task_option == "Summarization":
+        # Option to upload PDF or enter text
+        input_option = st.radio("Input type for summarization:", ("Enter Text", "Upload PDF"))
+
+        if input_option == "Enter Text":
+            if st.button("Generate Summary"):
+                if user_input:
+                    prompt = get_prompt(user_input)
+                    summary = get_response(prompt, fine_tuned_model, tokenizer)
+                    st.subheader("Generated Summary:")
+                    st.write(summary)
+                else:
+                    st.error("Please enter some text to summarize.")
+        
+        elif input_option == "Upload PDF":
+            uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
+
+            if uploaded_file is not None:
+                with open("temp_uploaded_pdf.pdf", "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+
+                # Extract text from the uploaded PDF
+                text = extract_text_from_pdf("temp_uploaded_pdf.pdf")
+
+                # Trim text if necessary (e.g., to 800 words)
+                trimmed_text = " ".join(text.split()[:800])
+
+                prompt = get_prompt(trimmed_text)
                 summary = get_response(prompt, fine_tuned_model, tokenizer)
+
                 st.subheader("Generated Summary:")
                 st.write(summary)
             else:
-                st.error("Please enter some text to summarize.")
-        
-        elif task_option == "GPT-Neo Text Generation":
+                st.error("Please upload a PDF file.")
+    
+    elif task_option == "GPT-Neo Text Generation":
+        # Button for text generation
+        if st.button("Generate Response"):
             if user_input:
                 response = infer_with_gpt_neo(user_input, gpt_neo_model, gpt_neo_tokenizer)
                 st.subheader("Generated Response:")
